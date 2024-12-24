@@ -8,9 +8,10 @@ cppdialect("C++20")
 targetdir("bin/%{cfg.buildcfg}")
 
 files({ "src/**.hpp", "src/**.cpp" })
+links({ "d3d12.lib", "dxgi.lib" })
 
 filter("configurations:Debug")
-defines({ "NETHER_DEBUG" })
+defines({ "DEF_NETHER_DEBUG" })
 symbols("On")
 
 filter("configurations:Release")
