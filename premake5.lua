@@ -1,55 +1,17 @@
--- A Visual studio solution.
-workspace "NetherEngine"
-    configurations
-    {
-        "Debug",
-        "Release"
-    }
-    architecture "x64"
+workspace("nether-engine")
+configurations({ "Debug", "Release" })
 
--- A Visual studio project.
-project "NetherEngine"
-    kind "ConsoleApp"
-    language "C++"
-    cppdialect "C++20"
+project("nether-engine")
+kind("WindowedApp")
+language("C++")
+cppdialect("C++20")
+targetdir("bin/%{cfg.buildcfg}")
 
-    objdir "bin-int/%{cfg.buildcfg}"
-    targetdir "bin/%{cfg.buildcfg}"
+files({ "src/**.hpp", "src/**.cpp" })
 
-    files
-    {
-        "src/**.cpp",
-        "include/**.hpp",
-        "shaders/**.hlsl"
-    }
+filter("configurations:Debug")
+defines({ "NETHER_DEBUG" })
+symbols("On")
 
-    includedirs 
-    { 
-        "include/",
-        "include/NetherEngine",
-    }
-
-    links
-    {
-        "d3d12",
-        "dxgi",
-        "dxguid",
-        "dxcompiler",
-    }
-
-    pchheader "Pch.hpp"
-    pchsource "src/Pch.cpp"
-
-    staticruntime "Off"
-
-    filter "files:**.hlsl"
-        buildaction "None"
-
-    filter "configurations:Debug"
-        defines "NETHER_DEBUG"
-        symbols "On"
-        optimize "Debug"
-
-    filter "configurations:Release"
-        defines "NETHER_RELEASE"
-        optimize "Speed"
+filter("configurations:Release")
+optimize("On")

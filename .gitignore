@@ -1,10 +1,6 @@
 *.sln
 *.vcxproj
-*.vcxproj.filters
-*.vcxproj.user
+*.vs
+*.user
 bin/
-bin-int/
-.vs/
-vcpkg_installed/
-*.cso
-*.zip
+obj/
