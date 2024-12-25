@@ -2,7 +2,7 @@ workspace("nether-engine")
 configurations({ "Debug", "Release" })
 
 project("nether-engine")
-kind("WindowedApp")
+kind("ConsoleApp")
 language("C++")
 cppdialect("C++20")
 targetdir("bin/%{cfg.buildcfg}")
