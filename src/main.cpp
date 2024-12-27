@@ -1,68 +1,21 @@
-#ifndef UNICODE
-#define UNICODE
-#endif
-
-// Windows includes.
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#include <wrl/client.h>
-
-// Standard library includes.
-#include <array>
-#include <cstdint>
-#include <exception>
-#include <format>
-#include <iostream>
-#include <source_location>
-#include <string>
-
-// DXGI / D3D12 includes.
-#include <d3d12.h>
-#include <dxgi1_6.h>
-
-// Typedefs for commonly used datatypes.
-typedef uint8_t u8;
-typedef uint16_t u16;
-typedef uint32_t u32;
-typedef uint64_t u64;
-
-typedef int8_t i8;
-typedef int16_t i16;
-typedef int32_t i32;
-typedef int64_t i64;
-
-typedef float f32;
-typedef double f64;
-
-#ifdef DEF_NETHER_DEBUG
-static constexpr bool NETHER_DEBUG = true;
-#else
-static constexpr bool NETHER_DEBUG = false;
-#endif
-
-using namespace Microsoft::WRL;
-
-static inline void throw_if_failed(const HRESULT hr,
-                                   const std::source_location source_location = std::source_location::current())
-{
-    if (FAILED(hr))
-    {
-        throw std::runtime_error(std::format("Exception caught at :: File name {}, Function name {}, Line number {}",
-                                             source_location.file_name(), source_location.function_name(),
-                                             source_location.line()));
-    }
-}
-
-static inline void set_name_d3d12_object(ComPtr<ID3D12Object> object, const std::wstring_view name)
-{
-    if constexpr (NETHER_DEBUG)
-    {
-        throw_if_failed(object->SetName(name.data()));
-    }
-}
+#include "common.hpp"
+#include "descriptor_heap.hpp"
 
 LRESULT CALLBACK win32_window_proc(const HWND window_handle, const UINT message, const WPARAM w_param,
                                    const LPARAM l_param);
+
+// Setting the Agility SDK parameters.
+/*
+This might not actually be required??
+extern "C"
+{
+    __declspec(dllexport) extern const UINT D3D12SDKVersion = 614u;
+}
+extern "C"
+{
+    __declspec(dllexport) extern const char *D3D12SDKPath = ".\\D3D12\\";
+}
+*/
 
 int main()
 {
@@ -239,15 +192,8 @@ int main()
 
         // Create RTV descriptor heap, which is a contiguous memory allocation for render target views, which describe a
         // particular resource.
-        const D3D12_DESCRIPTOR_HEAP_DESC rtv_descriptor_heap_desc = {
-            .Type = D3D12_DESCRIPTOR_HEAP_TYPE::D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
-            .NumDescriptors = NUM_BACK_BUFFERS,
-            .Flags = D3D12_DESCRIPTOR_HEAP_FLAGS::D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
-            .NodeMask = 0u,
-        };
-        ComPtr<ID3D12DescriptorHeap> rtv_descriptor_heap = {};
-        throw_if_failed(device->CreateDescriptorHeap(&rtv_descriptor_heap_desc, IID_PPV_ARGS(&rtv_descriptor_heap)));
-        set_name_d3d12_object(rtv_descriptor_heap.Get(), L"D3D12 rtv descriptor heap");
+        nether::descriptor_heap_t rtv_descriptor_heap{device.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_RTV, NUM_BACK_BUFFERS,
+                                                      L"RTV Descriptor Heap"};
 
         // Create RTV for each of the swapchain backbuffer image.
         struct BackBuffer
@@ -257,22 +203,55 @@ int main()
         };
         std::array<BackBuffer, NUM_BACK_BUFFERS> back_buffers = {};
 
-        D3D12_CPU_DESCRIPTOR_HANDLE current_rtv_descriptor_handle =
-            rtv_descriptor_heap->GetCPUDescriptorHandleForHeapStart();
-
-        SIZE_T rtv_descriptor_handle_increment_size =
-            device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-
         for (u32 i = 0; i < NUM_BACK_BUFFERS; i++)
         {
             throw_if_failed(swapchain->GetBuffer(i, IID_PPV_ARGS(&back_buffers[i].resource)));
 
-            device->CreateRenderTargetView(back_buffers[i].resource.Get(), nullptr, current_rtv_descriptor_handle);
+            nether::descriptor_handle_t descriptor_handle =
+                rtv_descriptor_heap.get_then_offset_current_descriptor_handle();
 
-            back_buffers[i].cpu_rtv_handle = current_rtv_descriptor_handle;
+            device->CreateRenderTargetView(back_buffers[i].resource.Get(), nullptr, descriptor_handle.cpu_handle);
 
-            current_rtv_descriptor_handle.ptr += rtv_descriptor_handle_increment_size;
+            back_buffers[i].cpu_rtv_handle = descriptor_handle.cpu_handle;
         }
+
+        // Create the root signature, which is kind of a function signature for shaders that descripts the shader's
+        // inputs.
+        ComPtr<ID3D12RootSignature> root_signature{};
+
+        const D3D12_ROOT_PARAMETER1 root_parameter_desc = {
+            .ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
+            .Constants =
+                {
+
+                    .ShaderRegister = 0u,
+                    .RegisterSpace = 0u,
+                    .Num32BitValues = 64,
+                },
+            .ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL,
+        };
+
+        const D3D12_VERSIONED_ROOT_SIGNATURE_DESC root_signature_desc = {
+
+            .Version = D3D_ROOT_SIGNATURE_VERSION_1_1,
+            .Desc_1_1 =
+                {
+
+                    .NumParameters = 1u,
+                    .pParameters = &root_parameter_desc,
+                    .NumStaticSamplers = 0u,
+                    .Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED |
+                             D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED,
+                },
+        };
+
+        ComPtr<ID3DBlob> root_signature_blob{};
+        ComPtr<ID3DBlob> error_blob{};
+
+        throw_if_failed(D3D12SerializeVersionedRootSignature(&root_signature_desc, &root_signature_blob, &error_blob));
+        throw_if_failed(device->CreateRootSignature(0u, root_signature_blob->GetBufferPointer(),
+                                                    root_signature_blob->GetBufferSize(),
+                                                    IID_PPV_ARGS(&root_signature)));
 
         ShowWindow(window_handle, SW_SHOW);
 
