@@ -220,6 +220,23 @@ int main()
         ComPtr<IDXGISwapChain3> swapchain = {};
         throw_if_failed(swapchain_1.As(&swapchain));
 
+        // Setup viewport and scissor rect.
+        const D3D12_VIEWPORT viewport = {
+            .TopLeftX = 0.0f,
+            .TopLeftY = 0.0f,
+            .Width = (f32)CLIENT_WIDTH,
+            .Height = (f32)CLIENT_HEIGHT,
+            .MinDepth = 0.0f,
+            .MaxDepth = 1.0f,
+        };
+
+        const D3D12_RECT scissor_rect = {
+            .left = 0,
+            .top = 0,
+            .right = (LONG)CLIENT_WIDTH,
+            .bottom = (LONG)CLIENT_HEIGHT,
+        };
+
         // Create RTV descriptor heap, which is a contiguous memory allocation for render target views, which describe a
         // particular resource.
         const D3D12_DESCRIPTOR_HEAP_DESC rtv_descriptor_heap_desc = {
@@ -262,6 +279,7 @@ int main()
         // Main game loop.
         u32 current_swapchain_backbuffer_index = swapchain->GetCurrentBackBufferIndex();
 
+        u64 frame_index = 0u;
         bool quit = false;
         while (!quit)
         {
@@ -289,6 +307,9 @@ int main()
             throw_if_failed(graphics_command_list->Reset(
                 direct_command_allocators[current_swapchain_backbuffer_index].Get(), nullptr));
 
+            graphics_command_list->OMSetRenderTargets(
+                1u, &back_buffers[current_swapchain_backbuffer_index].cpu_rtv_handle, false, nullptr);
+
             // Transition the swapchain backbuffer from a presentable format to render target view.
             const D3D12_RESOURCE_BARRIER backbuffer_present_to_render_target = {
                 .Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
@@ -303,12 +324,15 @@ int main()
             };
             graphics_command_list->ResourceBarrier(1u, &backbuffer_present_to_render_target);
 
-            static const std::array<f32, 4> clear_color{1.0f, 0.0f, 0.0f, 1.0f};
+            const std::array<f32, 4> clear_color{sinf((f32)frame_index / 120.0f), 0.0f, 0.0f, 1.0f};
+
             graphics_command_list->ClearRenderTargetView(
                 back_buffers[current_swapchain_backbuffer_index].cpu_rtv_handle, clear_color.data(), 0u, nullptr);
+            graphics_command_list->RSSetViewports(1u, &viewport);
+            graphics_command_list->RSSetScissorRects(1u, &scissor_rect);
 
             // Transition swapchain back to presentable format.
-            const D3D12_RESOURCE_BARRIER backbuffer_render_target_backbuffer_to_present = {
+            const D3D12_RESOURCE_BARRIER backbuffer_render_target_to_present = {
                 .Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
                 .Transition =
                     {
@@ -319,7 +343,7 @@ int main()
                         .StateAfter = D3D12_RESOURCE_STATE_PRESENT,
                     },
             };
-            graphics_command_list->ResourceBarrier(1u, &backbuffer_present_to_render_target);
+            graphics_command_list->ResourceBarrier(1u, &backbuffer_render_target_to_present);
 
             // Submit command list for execution.
             throw_if_failed(graphics_command_list->Close());
@@ -342,6 +366,8 @@ int main()
             {
                 fence->SetEventOnCompletion(frame_fence_values[current_swapchain_backbuffer_index], nullptr);
             }
+
+            ++frame_index;
         }
     }
     catch (std::exception &e)
