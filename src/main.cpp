@@ -17,11 +17,87 @@ extern "C"
 }
 */
 
+#include <dxcapi.h>
+// Helper function to compiler shaders using DXC's api.
+
+static ComPtr<IDxcBlob> compile_shader(const std::wstring_view shader_path, const std::wstring_view target_profile,
+                                       const std::wstring_view entry_point)
+{
+    ComPtr<IDxcBlob> result = {};
+
+    // NOTE: These need to be initialized only once
+    ComPtr<IDxcUtils> utils{};
+    ComPtr<IDxcCompiler3> compiler{};
+    ComPtr<IDxcIncludeHandler> include_handler{};
+
+    throw_if_failed(::DxcCreateInstance(CLSID_DxcUtils, IID_PPV_ARGS(&utils)));
+    throw_if_failed(::DxcCreateInstance(CLSID_DxcCompiler, IID_PPV_ARGS(&compiler)));
+    throw_if_failed(utils->CreateDefaultIncludeHandler(&include_handler));
+
+    // Setup compilation arguments.
+    std::vector<LPCWSTR> compilation_arguments = {
+        L"-HV",
+        L"2021",
+        L"-E",
+        entry_point.data(),
+        L"-T",
+        target_profile.data(),
+        DXC_ARG_PACK_MATRIX_ROW_MAJOR,
+        DXC_ARG_WARNINGS_ARE_ERRORS,
+        DXC_ARG_ALL_RESOURCES_BOUND,
+    };
+
+    // Indicate that the shader should be in a debuggable state if in debug mode.
+    // Else, set optimization level to 03.
+    if constexpr (NETHER_DEBUG)
+    {
+        compilation_arguments.push_back(DXC_ARG_DEBUG);
+    }
+    else
+    {
+        compilation_arguments.push_back(DXC_ARG_OPTIMIZATION_LEVEL3);
+    }
+
+    // Load the shader source file to a blob.
+    ComPtr<IDxcBlobEncoding> source_blob{nullptr};
+    throw_if_failed(utils->LoadFile(shader_path.data(), nullptr, &source_blob));
+
+    const DxcBuffer source_buffer = {
+        .Ptr = source_blob->GetBufferPointer(),
+        .Size = source_blob->GetBufferSize(),
+        .Encoding = 0u,
+    };
+
+    // Compile the shader.
+    ComPtr<IDxcResult> compiled_shader_buffer{};
+    const HRESULT hr = compiler->Compile(&source_buffer, compilation_arguments.data(),
+                                         static_cast<uint32_t>(compilation_arguments.size()), include_handler.Get(),
+                                         IID_PPV_ARGS(&compiled_shader_buffer));
+    if (FAILED(hr))
+    {
+        std::wcout << "Failed to compile shader with path : " << shader_path;
+    }
+
+    // Get compilation errors (if any).
+    ComPtr<IDxcBlobUtf8> errors{};
+    throw_if_failed(compiled_shader_buffer->GetOutput(DXC_OUT_ERRORS, IID_PPV_ARGS(&errors), nullptr));
+    if (errors && errors->GetStringLength() > 0)
+    {
+        const LPCSTR error_message = errors->GetStringPointer();
+        std::wcout << "Shader compiler error message : " << error_message;
+    }
+
+    ComPtr<IDxcBlob> compiled_shader_blob{nullptr};
+    compiled_shader_buffer->GetOutput(DXC_OUT_OBJECT, IID_PPV_ARGS(&compiled_shader_blob), nullptr);
+
+    return compiled_shader_blob;
+}
+
 struct upload_buffer_creation_result_t
 {
     u8 *ptr{};
     ComPtr<ID3D12Resource> resource{};
-    u32 srv_index{};
+    u64 srv_index{};
 };
 
 // Create upload buffer, copies data to it, and creates a SRV.
@@ -73,7 +149,7 @@ upload_buffer_creation_result_t create_upload_buffer(ID3D12Device *const device,
             {
 
                 .FirstElement = 0u,
-                .NumElements = data.size(),
+                .NumElements = static_cast<UINT>(data.size()),
                 .StructureByteStride = sizeof(T),
                 .Flags = D3D12_BUFFER_SRV_FLAG_NONE,
             },
@@ -330,8 +406,8 @@ int main()
         // Create upload heaps for vertex data (position / color) and index buffer.
         static constexpr std::array<DirectX::XMFLOAT3, 3> position_data = {
             DirectX::XMFLOAT3{-0.5f, 0.5f, 0.0f},
-            DirectX::XMFLOAT3{0.5f, 0.0f, 0.0f},
-            DirectX::XMFLOAT3{-0.5f, -0.5f, 0.0f},
+            DirectX::XMFLOAT3{0.5f, 0.5f, 0.0f},
+            DirectX::XMFLOAT3{0.0f, -0.5f, 0.0f},
         };
 
         upload_buffer_creation_result_t vertex_position_buffer_creation_result =
@@ -339,23 +415,87 @@ int main()
 
         ComPtr<ID3D12Resource> vertex_color_buffer_resource{};
         static constexpr std::array<DirectX::XMFLOAT3, 3> color_data = {
-            DirectX::XMFLOAT3{1.0f, 0.0f, 0.0f},
-            DirectX::XMFLOAT3{0.0f, 1.0f, 0.0f},
-            DirectX::XMFLOAT3{0.0f, 0.0f, 1.0f},
+            DirectX::XMFLOAT3{0.0f, 1.0f, 1.0f},
+            DirectX::XMFLOAT3{1.0f, 0.0f, 1.0f},
+            DirectX::XMFLOAT3{1.0f, 1.0f, 0.0f},
         };
 
         upload_buffer_creation_result_t vertex_color_buffer_creation_result =
             create_upload_buffer<DirectX::XMFLOAT3>(device.Get(), color_data, &cbv_srv_uav_descriptor_heap);
 
-        static constexpr std::array<u32, 3> index_buffer_data = {0u, 1u, 2u};
+        static constexpr std::array<u16, 3> index_buffer_data = {0u, 1u, 2u};
         upload_buffer_creation_result_t index_buffer_creation_result =
-            create_upload_buffer<u32>(device.Get(), index_buffer_data, &cbv_srv_uav_descriptor_heap);
+            create_upload_buffer<u16>(device.Get(), index_buffer_data, &cbv_srv_uav_descriptor_heap);
 
         const D3D12_INDEX_BUFFER_VIEW index_buffer_view = {
             .BufferLocation = index_buffer_creation_result.resource->GetGPUVirtualAddress(),
-            .SizeInBytes = index_buffer_data.size() * sizeof(u32),
-            .Format = DXGI_FORMAT_UNKNOWN,
+            .SizeInBytes = static_cast<UINT>(index_buffer_data.size() * sizeof(u16)),
+            .Format = DXGI_FORMAT_R16_UINT,
         };
+
+        // Compile shaders.
+        ComPtr<IDxcBlob> vertex_shader_blob = compile_shader(L"shaders/triangle_shader.hlsl", L"vs_6_6", L"vs_main");
+        ComPtr<IDxcBlob> pixel_shader_blob = compile_shader(L"shaders/triangle_shader.hlsl", L"ps_6_6", L"ps_main");
+
+        const D3D12_GRAPHICS_PIPELINE_STATE_DESC graphics_pipeline_state_desc = {
+            .pRootSignature = root_signature.Get(),
+            .VS =
+                {
+                    .pShaderBytecode = vertex_shader_blob->GetBufferPointer(),
+                    .BytecodeLength = vertex_shader_blob->GetBufferSize(),
+                },
+            .PS =
+                {
+                    .pShaderBytecode = pixel_shader_blob->GetBufferPointer(),
+                    .BytecodeLength = pixel_shader_blob->GetBufferSize(),
+                },
+            .BlendState =
+                {
+                    .AlphaToCoverageEnable = false,
+                    .IndependentBlendEnable = false,
+                    .RenderTarget = {D3D12_RENDER_TARGET_BLEND_DESC{
+                        .BlendEnable = FALSE,
+                        .LogicOpEnable = FALSE,
+                        .SrcBlend = D3D12_BLEND_ONE,
+                        .DestBlend = D3D12_BLEND_ZERO,
+                        .BlendOp = D3D12_BLEND_OP_ADD,
+                        .SrcBlendAlpha = D3D12_BLEND_ONE,
+                        .DestBlendAlpha = D3D12_BLEND_ZERO,
+                        .BlendOpAlpha = D3D12_BLEND_OP_ADD,
+                        .LogicOp = D3D12_LOGIC_OP_NOOP,
+                        .RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL,
+                    }},
+                },
+            .SampleMask = UINT_MAX,
+            .RasterizerState =
+                {
+                    .FillMode = D3D12_FILL_MODE_SOLID,
+                    .CullMode = D3D12_CULL_MODE_BACK,
+                    .FrontCounterClockwise = FALSE,
+                    .DepthClipEnable = FALSE,
+                    .MultisampleEnable = FALSE,
+                    .ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF,
+                },
+            .DepthStencilState =
+                {
+                    .DepthEnable = FALSE,
+                },
+            .InputLayout =
+                {
+                    .NumElements = 0u,
+                },
+            .PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
+            .NumRenderTargets = 1u,
+            .RTVFormats =
+                {
+                    DXGI_FORMAT_R8G8B8A8_UNORM,
+                },
+            .SampleDesc = {1u, 0u},
+            .NodeMask = 0u,
+        };
+
+        ComPtr<ID3D12PipelineState> pso = {};
+        throw_if_failed(device->CreateGraphicsPipelineState(&graphics_pipeline_state_desc, IID_PPV_ARGS(&pso)));
 
         ShowWindow(window_handle, SW_SHOW);
 
@@ -407,12 +547,38 @@ int main()
             };
             graphics_command_list->ResourceBarrier(1u, &backbuffer_present_to_render_target);
 
-            const std::array<f32, 4> clear_color{sinf((f32)frame_index / 120.0f), 0.0f, 0.0f, 1.0f};
+            const std::array<f32, 4> clear_color{1.0f, 1.0f, 1.0f, 1.0f};
 
             graphics_command_list->ClearRenderTargetView(
                 back_buffers[current_swapchain_backbuffer_index].cpu_rtv_handle, clear_color.data(), 0u, nullptr);
+
             graphics_command_list->RSSetViewports(1u, &viewport);
             graphics_command_list->RSSetScissorRects(1u, &scissor_rect);
+
+            // Set pipeline state.
+            graphics_command_list->SetPipelineState(pso.Get());
+            graphics_command_list->SetGraphicsRootSignature(root_signature.Get());
+            graphics_command_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            graphics_command_list->IASetIndexBuffer(&index_buffer_view);
+
+            ID3D12DescriptorHeap *const shader_visible_descriptor_heaps = {
+                cbv_srv_uav_descriptor_heap.descriptor_heap.Get(),
+            };
+
+            graphics_command_list->SetDescriptorHeaps(1u, &shader_visible_descriptor_heaps);
+
+            struct render_resources_t
+            {
+                u32 position_buffer_index{};
+                u32 color_buffer_index{};
+            };
+            render_resources_t render_resources = {
+                .position_buffer_index = (u32)vertex_position_buffer_creation_result.srv_index,
+                .color_buffer_index = (u32)vertex_color_buffer_creation_result.srv_index,
+            };
+            graphics_command_list->SetGraphicsRoot32BitConstants(0u, 64u, &render_resources, 0u);
+
+            graphics_command_list->DrawInstanced(3u, 1u, 0u, 0u);
 
             // Transition swapchain back to presentable format.
             const D3D12_RESOURCE_BARRIER backbuffer_render_target_to_present = {

@@ -21,6 +21,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 // DXGI / D3D12 includes.
 #include <d3d12.h>

@@ -10,6 +10,7 @@ struct descriptor_handle_t
     D3D12_GPU_DESCRIPTOR_HANDLE gpu_handle{};
 
     // The index of the descriptor from heap start.
+    // TODO: u32 should be enough?
     u64 index{};
 };
 
