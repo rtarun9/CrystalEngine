@@ -17,6 +17,77 @@ extern "C"
 }
 */
 
+struct upload_buffer_creation_result_t
+{
+    u8 *ptr{};
+    ComPtr<ID3D12Resource> resource{};
+    u32 srv_index{};
+};
+
+// Create upload buffer, copies data to it, and creates a SRV.
+template <typename T>
+upload_buffer_creation_result_t create_upload_buffer(ID3D12Device *const device, const std::span<const T> data,
+                                                     nether::descriptor_heap_t *const cbv_srv_uav_descriptor_heap)
+{
+    upload_buffer_creation_result_t result{};
+
+    const D3D12_HEAP_PROPERTIES upload_heap_properties = {
+        .Type = D3D12_HEAP_TYPE_UPLOAD,
+        .CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
+        .MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN,
+        .CreationNodeMask = 0u,
+        .VisibleNodeMask = 0u,
+    };
+
+    const D3D12_RESOURCE_DESC buffer_resource_desc = {
+        .Dimension = D3D12_RESOURCE_DIMENSION_BUFFER,
+        .Alignment = 0u,
+        .Width = data.size_bytes(),
+        .Height = 1u,
+        .DepthOrArraySize = 1u,
+        .MipLevels = 1u,
+        .Format = DXGI_FORMAT_UNKNOWN,
+        .SampleDesc = {1u, 0u},
+        .Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
+        .Flags = D3D12_RESOURCE_FLAG_NONE,
+    };
+
+    throw_if_failed(device->CreateCommittedResource(&upload_heap_properties, D3D12_HEAP_FLAG_NONE,
+                                                    &buffer_resource_desc, D3D12_RESOURCE_STATE_COMMON, nullptr,
+                                                    IID_PPV_ARGS(&result.resource)));
+
+    const D3D12_RANGE no_read_range = {
+        .Begin = 0u,
+        .End = 0u,
+    };
+
+    result.resource->Map(0u, &no_read_range, (void **)&result.ptr);
+    std::memcpy(result.ptr, data.data(), data.size_bytes());
+
+    // create the SRV.
+    const D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {
+        .Format = DXGI_FORMAT_UNKNOWN,
+        .ViewDimension = D3D12_SRV_DIMENSION_BUFFER,
+        .Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+        .Buffer =
+            {
+
+                .FirstElement = 0u,
+                .NumElements = data.size(),
+                .StructureByteStride = sizeof(T),
+                .Flags = D3D12_BUFFER_SRV_FLAG_NONE,
+            },
+    };
+
+    nether::descriptor_handle_t descriptor_handle =
+        cbv_srv_uav_descriptor_heap->get_then_offset_current_descriptor_handle();
+    device->CreateShaderResourceView(result.resource.Get(), &srv_desc, descriptor_handle.cpu_handle);
+
+    result.srv_index = descriptor_handle.index;
+
+    return result;
+}
+
 int main()
 {
     HINSTANCE instance = GetModuleHandle(nullptr);
@@ -195,6 +266,9 @@ int main()
         nether::descriptor_heap_t rtv_descriptor_heap{device.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_RTV, NUM_BACK_BUFFERS,
                                                       L"RTV Descriptor Heap"};
 
+        nether::descriptor_heap_t cbv_srv_uav_descriptor_heap{device.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 10u,
+                                                              L"CBV SRV UAV Descriptor Heap"};
+
         // Create RTV for each of the swapchain backbuffer image.
         struct BackBuffer
         {
@@ -252,6 +326,36 @@ int main()
         throw_if_failed(device->CreateRootSignature(0u, root_signature_blob->GetBufferPointer(),
                                                     root_signature_blob->GetBufferSize(),
                                                     IID_PPV_ARGS(&root_signature)));
+
+        // Create upload heaps for vertex data (position / color) and index buffer.
+        static constexpr std::array<DirectX::XMFLOAT3, 3> position_data = {
+            DirectX::XMFLOAT3{-0.5f, 0.5f, 0.0f},
+            DirectX::XMFLOAT3{0.5f, 0.0f, 0.0f},
+            DirectX::XMFLOAT3{-0.5f, -0.5f, 0.0f},
+        };
+
+        upload_buffer_creation_result_t vertex_position_buffer_creation_result =
+            create_upload_buffer<DirectX::XMFLOAT3>(device.Get(), position_data, &cbv_srv_uav_descriptor_heap);
+
+        ComPtr<ID3D12Resource> vertex_color_buffer_resource{};
+        static constexpr std::array<DirectX::XMFLOAT3, 3> color_data = {
+            DirectX::XMFLOAT3{1.0f, 0.0f, 0.0f},
+            DirectX::XMFLOAT3{0.0f, 1.0f, 0.0f},
+            DirectX::XMFLOAT3{0.0f, 0.0f, 1.0f},
+        };
+
+        upload_buffer_creation_result_t vertex_color_buffer_creation_result =
+            create_upload_buffer<DirectX::XMFLOAT3>(device.Get(), color_data, &cbv_srv_uav_descriptor_heap);
+
+        static constexpr std::array<u32, 3> index_buffer_data = {0u, 1u, 2u};
+        upload_buffer_creation_result_t index_buffer_creation_result =
+            create_upload_buffer<u32>(device.Get(), index_buffer_data, &cbv_srv_uav_descriptor_heap);
+
+        const D3D12_INDEX_BUFFER_VIEW index_buffer_view = {
+            .BufferLocation = index_buffer_creation_result.resource->GetGPUVirtualAddress(),
+            .SizeInBytes = index_buffer_data.size() * sizeof(u32),
+            .Format = DXGI_FORMAT_UNKNOWN,
+        };
 
         ShowWindow(window_handle, SW_SHOW);
 

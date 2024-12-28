@@ -18,12 +18,16 @@
 #include <format>
 #include <iostream>
 #include <source_location>
+#include <span>
 #include <string>
 #include <string_view>
 
 // DXGI / D3D12 includes.
 #include <d3d12.h>
 #include <dxgi1_6.h>
+
+// DXMath include.
+#include <DirectXMath.h>
 
 // Typedefs for commonly used datatypes.
 typedef uint8_t u8;
