@@ -1,13 +1,13 @@
 #pragma once
 
 // Dump of all the stuff that is common to all files throughout this project.
-
 #ifndef UNICODE
 #define UNICODE
 #endif
 
 // Windows includes.
 #define WIN32_LEAN_AND_MEAN
+#include <comdef.h>
 #include <windows.h>
 #include <wrl/client.h>
 
@@ -57,6 +57,9 @@ static inline void throw_if_failed(const HRESULT hr,
 {
     if (FAILED(hr))
     {
+        _com_error err(hr);
+        LPCWSTR error_message = err.ErrorMessage();
+
         throw std::runtime_error(std::format("Exception caught at :: File name {}, Function name {}, Line number {}",
                                              source_location.file_name(), source_location.function_name(),
                                              source_location.line()));

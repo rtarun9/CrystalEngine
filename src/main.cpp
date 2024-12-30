@@ -1,97 +1,20 @@
 #include "common.hpp"
+
 #include "descriptor_heap.hpp"
+#include "shader_compiler.hpp"
 
-LRESULT CALLBACK win32_window_proc(const HWND window_handle, const UINT message, const WPARAM w_param,
-                                   const LPARAM l_param);
-
-// Setting the Agility SDK parameters.
-/*
-This might not actually be required??
+// Parameter setup for directx agility SDK.
 extern "C"
 {
     __declspec(dllexport) extern const UINT D3D12SDKVersion = 614u;
 }
 extern "C"
 {
-    __declspec(dllexport) extern const char *D3D12SDKPath = ".\\D3D12\\";
+    __declspec(dllexport) extern const char *D3D12SDKPath = "D3D12//";
 }
-*/
 
-#include <dxcapi.h>
-// Helper function to compiler shaders using DXC's api.
-
-static ComPtr<IDxcBlob> compile_shader(const std::wstring_view shader_path, const std::wstring_view target_profile,
-                                       const std::wstring_view entry_point)
-{
-    ComPtr<IDxcBlob> result = {};
-
-    // NOTE: These need to be initialized only once
-    ComPtr<IDxcUtils> utils{};
-    ComPtr<IDxcCompiler3> compiler{};
-    ComPtr<IDxcIncludeHandler> include_handler{};
-
-    throw_if_failed(::DxcCreateInstance(CLSID_DxcUtils, IID_PPV_ARGS(&utils)));
-    throw_if_failed(::DxcCreateInstance(CLSID_DxcCompiler, IID_PPV_ARGS(&compiler)));
-    throw_if_failed(utils->CreateDefaultIncludeHandler(&include_handler));
-
-    // Setup compilation arguments.
-    std::vector<LPCWSTR> compilation_arguments = {
-        L"-HV",
-        L"2021",
-        L"-E",
-        entry_point.data(),
-        L"-T",
-        target_profile.data(),
-        DXC_ARG_PACK_MATRIX_ROW_MAJOR,
-        DXC_ARG_WARNINGS_ARE_ERRORS,
-        DXC_ARG_ALL_RESOURCES_BOUND,
-    };
-
-    // Indicate that the shader should be in a debuggable state if in debug mode.
-    // Else, set optimization level to 03.
-    if constexpr (NETHER_DEBUG)
-    {
-        compilation_arguments.push_back(DXC_ARG_DEBUG);
-    }
-    else
-    {
-        compilation_arguments.push_back(DXC_ARG_OPTIMIZATION_LEVEL3);
-    }
-
-    // Load the shader source file to a blob.
-    ComPtr<IDxcBlobEncoding> source_blob{nullptr};
-    throw_if_failed(utils->LoadFile(shader_path.data(), nullptr, &source_blob));
-
-    const DxcBuffer source_buffer = {
-        .Ptr = source_blob->GetBufferPointer(),
-        .Size = source_blob->GetBufferSize(),
-        .Encoding = 0u,
-    };
-
-    // Compile the shader.
-    ComPtr<IDxcResult> compiled_shader_buffer{};
-    const HRESULT hr = compiler->Compile(&source_buffer, compilation_arguments.data(),
-                                         static_cast<uint32_t>(compilation_arguments.size()), include_handler.Get(),
-                                         IID_PPV_ARGS(&compiled_shader_buffer));
-    if (FAILED(hr))
-    {
-        std::wcout << "Failed to compile shader with path : " << shader_path;
-    }
-
-    // Get compilation errors (if any).
-    ComPtr<IDxcBlobUtf8> errors{};
-    throw_if_failed(compiled_shader_buffer->GetOutput(DXC_OUT_ERRORS, IID_PPV_ARGS(&errors), nullptr));
-    if (errors && errors->GetStringLength() > 0)
-    {
-        const LPCSTR error_message = errors->GetStringPointer();
-        std::wcout << "Shader compiler error message : " << error_message;
-    }
-
-    ComPtr<IDxcBlob> compiled_shader_blob{nullptr};
-    compiled_shader_buffer->GetOutput(DXC_OUT_OBJECT, IID_PPV_ARGS(&compiled_shader_blob), nullptr);
-
-    return compiled_shader_blob;
-}
+LRESULT CALLBACK win32_window_proc(const HWND window_handle, const UINT message, const WPARAM w_param,
+                                   const LPARAM l_param);
 
 struct upload_buffer_creation_result_t
 {
@@ -390,14 +313,16 @@ int main()
                     .NumParameters = 1u,
                     .pParameters = &root_parameter_desc,
                     .NumStaticSamplers = 0u,
-                    .Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED |
-                             D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED,
+                    .Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED,
                 },
         };
 
         ComPtr<ID3DBlob> root_signature_blob{};
         ComPtr<ID3DBlob> error_blob{};
 
+        // Why do root signatures have this funky logic where you have to serialize a root signature first?
+        // Simple, root signatures can be specified as a shader, and the compiled shader blob can be used as a
+        // serialized root signature.
         throw_if_failed(D3D12SerializeVersionedRootSignature(&root_signature_desc, &root_signature_blob, &error_blob));
         throw_if_failed(device->CreateRootSignature(0u, root_signature_blob->GetBufferPointer(),
                                                     root_signature_blob->GetBufferSize(),
@@ -434,8 +359,10 @@ int main()
         };
 
         // Compile shaders.
-        ComPtr<IDxcBlob> vertex_shader_blob = compile_shader(L"shaders/triangle_shader.hlsl", L"vs_6_6", L"vs_main");
-        ComPtr<IDxcBlob> pixel_shader_blob = compile_shader(L"shaders/triangle_shader.hlsl", L"ps_6_6", L"ps_main");
+        ComPtr<IDxcBlob> vertex_shader_blob =
+            nether::shader_compiler::compile_shader(L"shaders/triangle_shader.hlsl", L"vs_6_6", L"vs_main");
+        ComPtr<IDxcBlob> pixel_shader_blob =
+            nether::shader_compiler::compile_shader(L"shaders/triangle_shader.hlsl", L"ps_6_6", L"ps_main");
 
         const D3D12_GRAPHICS_PIPELINE_STATE_DESC graphics_pipeline_state_desc = {
             .pRootSignature = root_signature.Get(),
@@ -484,6 +411,7 @@ int main()
                 {
                     .NumElements = 0u,
                 },
+            // Specify partial primitive type, while IA determines if its a strip / list.
             .PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
             .NumRenderTargets = 1u,
             .RTVFormats =
@@ -552,20 +480,16 @@ int main()
             graphics_command_list->ClearRenderTargetView(
                 back_buffers[current_swapchain_backbuffer_index].cpu_rtv_handle, clear_color.data(), 0u, nullptr);
 
-            graphics_command_list->RSSetViewports(1u, &viewport);
-            graphics_command_list->RSSetScissorRects(1u, &scissor_rect);
-
-            // Set pipeline state.
-            graphics_command_list->SetPipelineState(pso.Get());
-            graphics_command_list->SetGraphicsRootSignature(root_signature.Get());
-            graphics_command_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-            graphics_command_list->IASetIndexBuffer(&index_buffer_view);
-
             ID3D12DescriptorHeap *const shader_visible_descriptor_heaps = {
                 cbv_srv_uav_descriptor_heap.descriptor_heap.Get(),
             };
 
             graphics_command_list->SetDescriptorHeaps(1u, &shader_visible_descriptor_heaps);
+            // Set pipeline state.
+            graphics_command_list->SetPipelineState(pso.Get());
+            graphics_command_list->SetGraphicsRootSignature(root_signature.Get());
+            graphics_command_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            graphics_command_list->IASetIndexBuffer(&index_buffer_view);
 
             struct render_resources_t
             {
@@ -577,6 +501,9 @@ int main()
                 .color_buffer_index = (u32)vertex_color_buffer_creation_result.srv_index,
             };
             graphics_command_list->SetGraphicsRoot32BitConstants(0u, 64u, &render_resources, 0u);
+
+            graphics_command_list->RSSetViewports(1u, &viewport);
+            graphics_command_list->RSSetScissorRects(1u, &scissor_rect);
 
             graphics_command_list->DrawInstanced(3u, 1u, 0u, 0u);
 
@@ -618,6 +545,8 @@ int main()
 
             ++frame_index;
         }
+
+        throw_if_failed(debug_device->ReportLiveDeviceObjects(D3D12_RLDO_SUMMARY));
     }
     catch (std::exception &e)
     {

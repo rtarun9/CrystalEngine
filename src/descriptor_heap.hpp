@@ -10,8 +10,7 @@ struct descriptor_handle_t
     D3D12_GPU_DESCRIPTOR_HANDLE gpu_handle{};
 
     // The index of the descriptor from heap start.
-    // TODO: u32 should be enough?
-    u64 index{};
+    u32 index{};
 };
 
 // A light weight descriptor heap abstraction that makes working with a bindless rendering approach really simple.
@@ -23,7 +22,7 @@ class descriptor_heap_t
 
     descriptor_handle_t get_then_offset_current_descriptor_handle();
 
-    descriptor_handle_t get_descriptor_at_index(const u64 index) const;
+    descriptor_handle_t get_descriptor_at_index(const u32 index) const;
 
   public:
     ComPtr<ID3D12DescriptorHeap> descriptor_heap{};

@@ -44,7 +44,7 @@ descriptor_handle_t descriptor_heap_t::get_then_offset_current_descriptor_handle
     return result;
 }
 
-descriptor_handle_t descriptor_heap_t::get_descriptor_at_index(const u64 index) const
+descriptor_handle_t descriptor_heap_t::get_descriptor_at_index(const u32 index) const
 {
     descriptor_handle_t result = {
         .cpu_handle = descriptor_heap->GetCPUDescriptorHandleForHeapStart(),
