@@ -547,10 +547,42 @@ int main()
         // Main game loop.
         u32 current_swapchain_backbuffer_index = swapchain->GetCurrentBackBufferIndex();
 
+        // Delta time computation.
+        LARGE_INTEGER perf_counter_frequency = {};
+        QueryPerformanceFrequency(&perf_counter_frequency);
+
+        LARGE_INTEGER counter_start_time = {};
+        QueryPerformanceCounter(&counter_start_time);
+
+        // NOTE: Delta time is in seconds.
+        f32 delta_time = 0.0f;
+
+        // TODO: Move camera related code into its own cpp / header pair.
+        DirectX::XMVECTOR camera_position = DirectX::XMVectorSet(0.0f, 0.0f, -5.0f, 1.0f);
+        DirectX::XMVECTOR camera_front = DirectX::XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f);
+        DirectX::XMVECTOR camera_right{0.0f, 0.0f, 1.0f, 0.0f};
+
+        f32 pitch = 0.0f;
+        f32 yaw = 0.0f;
+        f32 roll = 0.0f;
+
         u64 frame_index = 0u;
         bool quit = false;
         while (!quit)
         {
+            using namespace DirectX;
+
+            const f32 camera_movement_speed = 20.0f * delta_time;
+            const f32 camera_rotation_speed = 1.5f * delta_time;
+
+            static DirectX::XMVECTOR camera_move_to_position = {};
+
+            DirectX::XMVECTOR move_to = {};
+
+            static f32 pitch_to = 0.0f;
+            static f32 yaw_to = 0.0f;
+            static f32 roll_to = 0.0f;
+
             MSG message = {};
             while (PeekMessageW(&message, 0, 0, 0, PM_REMOVE))
             {
@@ -562,13 +594,69 @@ int main()
                     {
                         quit = true;
                     }
-                }
-                break;
-                }
 
+                    if (message.wParam == 'W')
+                    {
+                        move_to += camera_front;
+                    }
+
+                    if (message.wParam == 'S')
+                    {
+                        move_to -= camera_front;
+                    }
+
+                    if (message.wParam == 'A')
+                    {
+                        move_to -= camera_right;
+                    }
+
+                    if (message.wParam == 'D')
+                    {
+                        move_to += camera_right;
+                    }
+
+                    if (message.wParam == VK_UP)
+                    {
+                        pitch_to -= camera_rotation_speed;
+                    }
+                    if (message.wParam == VK_DOWN)
+                    {
+                        pitch_to += camera_rotation_speed;
+                    }
+                    if (message.wParam == VK_LEFT)
+                    {
+                        yaw_to -= camera_rotation_speed;
+                    }
+                    if (message.wParam == VK_RIGHT)
+                    {
+                        yaw_to += camera_rotation_speed;
+                    }
+                }
+                };
                 TranslateMessage(&message);
                 DispatchMessage(&message);
             }
+
+            camera_move_to_position = DirectX::XMVectorLerp(
+                camera_move_to_position, DirectX::XMVector3Normalize(move_to) * camera_movement_speed, 0.02f);
+
+            pitch = std::lerp(pitch, pitch_to, 0.02f);
+            yaw = std::lerp(yaw, yaw_to, 0.02f);
+            roll = std::lerp(roll, roll_to, 0.02f);
+
+            camera_position += camera_move_to_position;
+
+            // The front vector is modified by yaw pitch roll.
+            DirectX::XMMATRIX rotation_matrix = DirectX::XMMatrixRotationRollPitchYaw(pitch, yaw, roll);
+
+            camera_front = DirectX::XMVector3Normalize(
+                DirectX::XMVector3TransformCoord(DirectX::XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f), rotation_matrix));
+
+            camera_right = DirectX::XMVector3Normalize(
+                DirectX::XMVector3TransformCoord(DirectX::XMVectorSet(1.0f, 0.0f, 0.0f, 0.0f), rotation_matrix));
+
+            DirectX::XMVECTOR camera_up =
+                DirectX::XMVector3Normalize(DirectX::XMVector3Cross(camera_front, camera_right));
 
             // Update constant buffer's and other scene parameter.
             transform_buffer_t transform_buffer = {};
@@ -576,12 +664,10 @@ int main()
                                             DirectX::XMMatrixRotationY(frame_index / 70.0f) *
                                             DirectX::XMMatrixTranslation(0.0f, 0.0f, 5.0f);
 
-            const DirectX::XMVECTOR eye_position = DirectX::XMVectorSet(0.0f, 0.0f, -1.0f, 1.0f);
-            const DirectX::XMVECTOR focus_position = DirectX::XMVectorSet(0.0f, 0.0f, 0.0f, 1.0f);
-            const DirectX::XMVECTOR up_vector = DirectX::XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+            const DirectX::XMVECTOR target_vector = camera_position + camera_front;
 
             transform_buffer.view_projection_matrix =
-                DirectX::XMMatrixLookAtLH(eye_position, focus_position, up_vector) *
+                DirectX::XMMatrixLookAtLH(camera_position, target_vector, camera_up) *
                 DirectX::XMMatrixPerspectiveFovLH(DirectX::XMConvertToRadians(45.0f),
                                                   (f32)CLIENT_WIDTH / (f32)CLIENT_HEIGHT, 0.1f, 100.0f);
 
@@ -601,7 +687,6 @@ int main()
                 .Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
                 .Transition =
                     {
-
                         .pResource = back_buffers[current_swapchain_backbuffer_index].resource.Get(),
                         .Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
                         .StateBefore = D3D12_RESOURCE_STATE_PRESENT,
@@ -685,9 +770,26 @@ int main()
             }
 
             ++frame_index;
+
+            LARGE_INTEGER counter_end_time = {};
+            QueryPerformanceCounter(&counter_end_time);
+
+            delta_time =
+                (f32)(counter_end_time.QuadPart - counter_start_time.QuadPart) / perf_counter_frequency.QuadPart;
+
+            counter_start_time.QuadPart = counter_end_time.QuadPart;
+
+            std::cout << delta_time << '\n';
         }
 
         // throw_if_failed(debug_device->ReportLiveDeviceObjects(D3D12_RLDO_SUMMARY));
+
+        // Flush the GPU.
+        throw_if_failed(direct_command_queue->Signal(fence.Get(), current_fence_value++));
+        if (fence->GetCompletedValue() < current_fence_value)
+        {
+            fence->SetEventOnCompletion(current_fence_value, nullptr);
+        }
     }
     catch (std::exception &e)
     {
