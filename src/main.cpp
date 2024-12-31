@@ -20,7 +20,10 @@ struct upload_buffer_creation_result_t
 {
     u8 *ptr{};
     ComPtr<ID3D12Resource> resource{};
-    u64 srv_index{};
+    u32 srv_index{};
+
+    // TODO: Make separate function & struct for constant buffers.
+    u32 cbv_index{};
 };
 
 // Create upload buffer, copies data to it, and creates a SRV.
@@ -345,7 +348,6 @@ int main()
             .Texture2D =
                 {
                     .MipSlice = 0u,
-
                 },
         };
 
@@ -391,27 +393,35 @@ int main()
                                                     root_signature_blob->GetBufferSize(),
                                                     IID_PPV_ARGS(&root_signature)));
 
-        // Create upload heaps for vertex data (position / color) and index buffer.
-        static constexpr std::array<DirectX::XMFLOAT3, 3> position_data = {
-            DirectX::XMFLOAT3{-0.5f, 0.5f, 0.0f},
-            DirectX::XMFLOAT3{0.5f, 0.5f, 0.0f},
-            DirectX::XMFLOAT3{0.0f, -0.5f, 0.0f},
+        // Create upload heaps for vertex data (position / color), index buffer and the constant buffer.
+
+        static constexpr std::array<DirectX::XMFLOAT3, 8> position_data = {
+            DirectX::XMFLOAT3(-1.0f, -1.0f, -1.0f), DirectX::XMFLOAT3(-1.0f, 1.0f, -1.0f),
+            DirectX::XMFLOAT3(1.0f, 1.0f, -1.0f),   DirectX::XMFLOAT3(1.0f, -1.0f, -1.0f),
+            DirectX::XMFLOAT3(-1.0f, -1.0f, 1.0f),  DirectX::XMFLOAT3(-1.0f, 1.0f, 1.0f),
+            DirectX::XMFLOAT3(1.0f, 1.0f, 1.0f),    DirectX::XMFLOAT3(1.0f, -1.0f, 1.0f),
         };
 
         upload_buffer_creation_result_t vertex_position_buffer_creation_result =
             create_upload_buffer<DirectX::XMFLOAT3>(device.Get(), position_data, &cbv_srv_uav_descriptor_heap);
 
         ComPtr<ID3D12Resource> vertex_color_buffer_resource{};
-        static constexpr std::array<DirectX::XMFLOAT3, 3> color_data = {
-            DirectX::XMFLOAT3{0.0f, 1.0f, 1.0f},
-            DirectX::XMFLOAT3{1.0f, 0.0f, 1.0f},
+        static constexpr std::array<DirectX::XMFLOAT3, 8> color_data = {
+            DirectX::XMFLOAT3{0.0f, 1.0f, 1.0f}, DirectX::XMFLOAT3{1.0f, 0.0f, 1.0f},
             DirectX::XMFLOAT3{1.0f, 1.0f, 0.0f},
+
+            DirectX::XMFLOAT3{1.0f, 0.0f, 0.0f}, DirectX::XMFLOAT3{0.0f, 1.0f, 0.0f},
+            DirectX::XMFLOAT3{0.0f, 0.0f, 1.0f},
+
+            DirectX::XMFLOAT3{0.0f, 0.0f, 0.0f}, DirectX::XMFLOAT3{1.0f, 1.0f, 1.0f},
         };
 
         upload_buffer_creation_result_t vertex_color_buffer_creation_result =
             create_upload_buffer<DirectX::XMFLOAT3>(device.Get(), color_data, &cbv_srv_uav_descriptor_heap);
 
-        static constexpr std::array<u16, 3> index_buffer_data = {0u, 1u, 2u};
+        static constexpr std::array<u16, 36> index_buffer_data = {
+            0, 1, 2, 0, 2, 3, 4, 6, 5, 4, 7, 6, 4, 5, 1, 4, 1, 0, 3, 2, 6, 3, 6, 7, 1, 5, 6, 1, 6, 2, 4, 0, 3, 4, 3, 7,
+        };
         upload_buffer_creation_result_t index_buffer_creation_result =
             create_upload_buffer<u16>(device.Get(), index_buffer_data, &cbv_srv_uav_descriptor_heap);
 
@@ -421,11 +431,34 @@ int main()
             .Format = DXGI_FORMAT_R16_UINT,
         };
 
+        struct alignas(256) transform_buffer_t
+        {
+            DirectX::XMMATRIX model_matrix{};
+            DirectX::XMMATRIX view_projection_matrix{};
+        };
+
+        upload_buffer_creation_result_t transform_constant_buffer_creation_result =
+            create_upload_buffer<transform_buffer_t>(device.Get(), std::array<transform_buffer_t, 1>{},
+                                                     &cbv_srv_uav_descriptor_heap);
+
+        // Create constant buffer view for the constant buffer.
+        const D3D12_CONSTANT_BUFFER_VIEW_DESC cbv_desc = {
+            .BufferLocation = transform_constant_buffer_creation_result.resource->GetGPUVirtualAddress(),
+            .SizeInBytes = sizeof(transform_buffer_t),
+        };
+
+        nether::descriptor_handle_t cbv_descriptor_handle =
+            cbv_srv_uav_descriptor_heap.get_then_offset_current_descriptor_handle();
+
+        device->CreateConstantBufferView(&cbv_desc, cbv_descriptor_handle.cpu_handle);
+
+        transform_constant_buffer_creation_result.cbv_index = cbv_descriptor_handle.index;
+
         // Compile shaders.
         ComPtr<IDxcBlob> vertex_shader_blob =
-            nether::shader_compiler::compile_shader(L"shaders/triangle_shader.hlsl", L"vs_6_6", L"vs_main");
+            nether::shader_compiler::compile_shader(L"shaders/test_shader.hlsl", L"vs_6_6", L"vs_main");
         ComPtr<IDxcBlob> pixel_shader_blob =
-            nether::shader_compiler::compile_shader(L"shaders/triangle_shader.hlsl", L"ps_6_6", L"ps_main");
+            nether::shader_compiler::compile_shader(L"shaders/test_shader.hlsl", L"ps_6_6", L"ps_main");
 
         const D3D12_GRAPHICS_PIPELINE_STATE_DESC graphics_pipeline_state_desc = {
             .pRootSignature = root_signature.Get(),
@@ -537,6 +570,23 @@ int main()
                 DispatchMessage(&message);
             }
 
+            // Update constant buffer's and other scene parameter.
+            transform_buffer_t transform_buffer = {};
+            transform_buffer.model_matrix = DirectX::XMMatrixRotationX(frame_index / 120.0f) *
+                                            DirectX::XMMatrixRotationY(frame_index / 70.0f) *
+                                            DirectX::XMMatrixTranslation(0.0f, 0.0f, 5.0f);
+
+            const DirectX::XMVECTOR eye_position = DirectX::XMVectorSet(0.0f, 0.0f, -1.0f, 1.0f);
+            const DirectX::XMVECTOR focus_position = DirectX::XMVectorSet(0.0f, 0.0f, 0.0f, 1.0f);
+            const DirectX::XMVECTOR up_vector = DirectX::XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+
+            transform_buffer.view_projection_matrix =
+                DirectX::XMMatrixLookAtLH(eye_position, focus_position, up_vector) *
+                DirectX::XMMatrixPerspectiveFovLH(DirectX::XMConvertToRadians(45.0f),
+                                                  (f32)CLIENT_WIDTH / (f32)CLIENT_HEIGHT, 0.1f, 100.0f);
+
+            memcpy(transform_constant_buffer_creation_result.ptr, &transform_buffer, sizeof(transform_buffer_t));
+
             // Reset command allocator and list for current frame.
             throw_if_failed(direct_command_allocators[current_swapchain_backbuffer_index]->Reset());
             throw_if_failed(graphics_command_list->Reset(
@@ -560,7 +610,7 @@ int main()
             };
             graphics_command_list->ResourceBarrier(1u, &backbuffer_present_to_render_target);
 
-            const std::array<f32, 4> clear_color{1.0f, 1.0f, 1.0f, 1.0f};
+            const std::array<f32, 4> clear_color{0.0f, 0.0f, 0.0f, 1.0f};
 
             graphics_command_list->ClearRenderTargetView(
                 back_buffers[current_swapchain_backbuffer_index].cpu_rtv_handle, clear_color.data(), 0u, nullptr);
@@ -573,6 +623,7 @@ int main()
             };
 
             graphics_command_list->SetDescriptorHeaps(1u, &shader_visible_descriptor_heaps);
+
             // Set pipeline state.
             graphics_command_list->SetPipelineState(pso.Get());
             graphics_command_list->SetGraphicsRootSignature(root_signature.Get());
@@ -583,17 +634,19 @@ int main()
             {
                 u32 position_buffer_index{};
                 u32 color_buffer_index{};
+                u32 transform_constant_buffer_index{};
             };
             render_resources_t render_resources = {
-                .position_buffer_index = (u32)vertex_position_buffer_creation_result.srv_index,
-                .color_buffer_index = (u32)vertex_color_buffer_creation_result.srv_index,
+                .position_buffer_index = vertex_position_buffer_creation_result.srv_index,
+                .color_buffer_index = vertex_color_buffer_creation_result.srv_index,
+                .transform_constant_buffer_index = transform_constant_buffer_creation_result.cbv_index,
             };
             graphics_command_list->SetGraphicsRoot32BitConstants(0u, 64u, &render_resources, 0u);
 
             graphics_command_list->RSSetViewports(1u, &viewport);
             graphics_command_list->RSSetScissorRects(1u, &scissor_rect);
 
-            graphics_command_list->DrawInstanced(3u, 1u, 0u, 0u);
+            graphics_command_list->DrawIndexedInstanced(36u, 1u, 0u, 0u, 0u);
 
             // Transition swapchain back to presentable format.
             const D3D12_RESOURCE_BARRIER backbuffer_render_target_to_present = {
@@ -634,7 +687,7 @@ int main()
             ++frame_index;
         }
 
-        throw_if_failed(debug_device->ReportLiveDeviceObjects(D3D12_RLDO_SUMMARY));
+        // throw_if_failed(debug_device->ReportLiveDeviceObjects(D3D12_RLDO_SUMMARY));
     }
     catch (std::exception &e)
     {
