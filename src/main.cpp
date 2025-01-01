@@ -330,7 +330,7 @@ int main()
                 .Format = DXGI_FORMAT_D32_FLOAT,
                 .DepthStencil =
                     {
-                        .Depth = 1.0f,
+                        .Depth = 0.0f,
                     },
             };
 
@@ -503,7 +503,7 @@ int main()
                 {
                     .DepthEnable = TRUE,
                     .DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL,
-                    .DepthFunc = D3D12_COMPARISON_FUNC_LESS,
+                    .DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL,
                     .StencilEnable = FALSE,
                     .FrontFace =
                         {
@@ -666,10 +666,29 @@ int main()
 
             const DirectX::XMVECTOR target_vector = camera_position + camera_front;
 
+            const float window_aspect_ratio = (f32)CLIENT_WIDTH / (f32)CLIENT_HEIGHT;
+
+            // Article followed for reverse Z:
+            //  https://iolite-engine.com/blog_posts/reverse_z_cheatsheet
+
+            // https://github.com/microsoft/DirectXMath/issues/158 link that shows the projection matrix for infinite
+            // far plane. Note : This code is taken from the directxmath source code for perspective projection fov lh,
+            // but modified for infinite far plane.
+
+            f32 sin_fov{};
+            f32 cos_fov{};
+            DirectX::XMScalarSinCos(&sin_fov, &cos_fov, 0.5f * DirectX::XMConvertToRadians(45.0f));
+
+            const f32 height = cos_fov / sin_fov;
+            const f32 width = height / window_aspect_ratio;
+
+            const f32 near_plane = 0.1f;
+            const DirectX::XMMATRIX projection_matrix =
+                DirectX::XMMatrixSet(width, 0.0f, 0.0f, 0.0f, 0.0f, height, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f,
+                                     0.0f, near_plane, 0.0f);
+
             transform_buffer.view_projection_matrix =
-                DirectX::XMMatrixLookAtLH(camera_position, target_vector, camera_up) *
-                DirectX::XMMatrixPerspectiveFovLH(DirectX::XMConvertToRadians(45.0f),
-                                                  (f32)CLIENT_WIDTH / (f32)CLIENT_HEIGHT, 0.1f, 100.0f);
+                DirectX::XMMatrixLookAtLH(camera_position, target_vector, camera_up) * projection_matrix;
 
             memcpy(transform_constant_buffer_creation_result.ptr, &transform_buffer, sizeof(transform_buffer_t));
 
@@ -700,7 +719,7 @@ int main()
             graphics_command_list->ClearRenderTargetView(
                 back_buffers[current_swapchain_backbuffer_index].cpu_rtv_handle, clear_color.data(), 0u, nullptr);
 
-            graphics_command_list->ClearDepthStencilView(depth_buffer.cpu_dsv_handle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0u,
+            graphics_command_list->ClearDepthStencilView(depth_buffer.cpu_dsv_handle, D3D12_CLEAR_FLAG_DEPTH, 0.0f, 0u,
                                                          0u, nullptr);
 
             ID3D12DescriptorHeap *const shader_visible_descriptor_heaps = {
