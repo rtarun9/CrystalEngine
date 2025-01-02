@@ -21,9 +21,6 @@ struct upload_buffer_creation_result_t
     u8 *ptr{};
     ComPtr<ID3D12Resource> resource{};
     u32 srv_index{};
-
-    // TODO: Make separate function & struct for constant buffers.
-    u32 cbv_index{};
 };
 
 // Create upload buffer, copies data to it, and creates a SRV.
@@ -89,6 +86,70 @@ upload_buffer_creation_result_t create_upload_buffer(ID3D12Device *const device,
 
     return result;
 }
+
+template <typename T> struct constant_buffer_creation_result_t
+{
+    u8 *ptr{};
+    ComPtr<ID3D12Resource> resource{};
+    u32 cbv_index{};
+
+    T data{};
+};
+
+// Create upload buffer, copies data to it, and creates a SRV.
+template <typename T>
+constant_buffer_creation_result_t<T> create_constant_buffer(
+    ID3D12Device *const device, nether::descriptor_heap_t *const cbv_srv_uav_descriptor_heap)
+{
+    constant_buffer_creation_result_t<T> result;
+
+    const D3D12_HEAP_PROPERTIES upload_heap_properties = {
+        .Type = D3D12_HEAP_TYPE_UPLOAD,
+        .CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
+        .MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN,
+        .CreationNodeMask = 0u,
+        .VisibleNodeMask = 0u,
+    };
+
+    const D3D12_RESOURCE_DESC buffer_resource_desc = {
+        .Dimension = D3D12_RESOURCE_DIMENSION_BUFFER,
+        .Alignment = 0u,
+        .Width = sizeof(T),
+        .Height = 1u,
+        .DepthOrArraySize = 1u,
+        .MipLevels = 1u,
+        .Format = DXGI_FORMAT_UNKNOWN,
+        .SampleDesc = {1u, 0u},
+        .Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
+        .Flags = D3D12_RESOURCE_FLAG_NONE,
+    };
+
+    throw_if_failed(device->CreateCommittedResource(&upload_heap_properties, D3D12_HEAP_FLAG_NONE,
+                                                    &buffer_resource_desc, D3D12_RESOURCE_STATE_COMMON, nullptr,
+                                                    IID_PPV_ARGS(&result.resource)));
+
+    const D3D12_RANGE no_read_range = {
+        .Begin = 0u,
+        .End = 0u,
+    };
+
+    result.resource->Map(0u, &no_read_range, (void **)&result.ptr);
+
+    // Create constant buffer view for the constant buffer.
+    const D3D12_CONSTANT_BUFFER_VIEW_DESC cbv_desc = {
+        .BufferLocation = result.resource->GetGPUVirtualAddress(),
+        .SizeInBytes = sizeof(T),
+    };
+
+    nether::descriptor_handle_t cbv_descriptor_handle =
+        cbv_srv_uav_descriptor_heap->get_then_offset_current_descriptor_handle();
+
+    device->CreateConstantBufferView(&cbv_desc, cbv_descriptor_handle.cpu_handle);
+
+    result.cbv_index = cbv_descriptor_handle.index;
+
+    return result;
+};
 
 int main()
 {
@@ -304,7 +365,6 @@ int main()
         depth_buffer_t depth_buffer = {};
 
         {
-
             const D3D12_HEAP_PROPERTIES default_heap_properties = {
                 .Type = D3D12_HEAP_TYPE_DEFAULT,
                 .CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
@@ -437,110 +497,121 @@ int main()
             DirectX::XMMATRIX view_projection_matrix{};
         };
 
-        upload_buffer_creation_result_t transform_constant_buffer_creation_result =
-            create_upload_buffer<transform_buffer_t>(device.Get(), std::array<transform_buffer_t, 1>{},
-                                                     &cbv_srv_uav_descriptor_heap);
-
-        // Create constant buffer view for the constant buffer.
-        const D3D12_CONSTANT_BUFFER_VIEW_DESC cbv_desc = {
-            .BufferLocation = transform_constant_buffer_creation_result.resource->GetGPUVirtualAddress(),
-            .SizeInBytes = sizeof(transform_buffer_t),
+        struct alignas(256) scene_buffer_t
+        {
+            DirectX::XMFLOAT4 light_position{};
+            DirectX::XMFLOAT4 light_color{};
         };
 
-        nether::descriptor_handle_t cbv_descriptor_handle =
-            cbv_srv_uav_descriptor_heap.get_then_offset_current_descriptor_handle();
+        constant_buffer_creation_result_t<transform_buffer_t> transform_constant_buffer_creation_result =
+            create_constant_buffer<transform_buffer_t>(device.Get(), &cbv_srv_uav_descriptor_heap);
 
-        device->CreateConstantBufferView(&cbv_desc, cbv_descriptor_handle.cpu_handle);
+        constant_buffer_creation_result_t<transform_buffer_t> light_transform_constant_buffer_creation_result =
+            create_constant_buffer<transform_buffer_t>(device.Get(), &cbv_srv_uav_descriptor_heap);
 
-        transform_constant_buffer_creation_result.cbv_index = cbv_descriptor_handle.index;
+        constant_buffer_creation_result_t<scene_buffer_t> scene_constant_buffer_creation_result =
+            create_constant_buffer<scene_buffer_t>(device.Get(), &cbv_srv_uav_descriptor_heap);
 
-        // Compile shaders.
-        ComPtr<IDxcBlob> vertex_shader_blob =
-            nether::shader_compiler::compile_shader(L"shaders/test_shader.hlsl", L"vs_6_6", L"vs_main");
-        ComPtr<IDxcBlob> pixel_shader_blob =
-            nether::shader_compiler::compile_shader(L"shaders/test_shader.hlsl", L"ps_6_6", L"ps_main");
+        scene_constant_buffer_creation_result.data.light_position = {0.0f, 1.0f, 5.0f, 1.0f};
+        scene_constant_buffer_creation_result.data.light_color = {1.0f, 1.0f, 1.0f, 1.0f};
 
-        const D3D12_GRAPHICS_PIPELINE_STATE_DESC graphics_pipeline_state_desc = {
-            .pRootSignature = root_signature.Get(),
-            .VS =
-                {
-                    .pShaderBytecode = vertex_shader_blob->GetBufferPointer(),
-                    .BytecodeLength = vertex_shader_blob->GetBufferSize(),
-                },
-            .PS =
-                {
-                    .pShaderBytecode = pixel_shader_blob->GetBufferPointer(),
-                    .BytecodeLength = pixel_shader_blob->GetBufferSize(),
-                },
-            .BlendState =
-                {
-                    .AlphaToCoverageEnable = false,
-                    .IndependentBlendEnable = false,
-                    .RenderTarget = {D3D12_RENDER_TARGET_BLEND_DESC{
-                        .BlendEnable = FALSE,
-                        .LogicOpEnable = FALSE,
-                        .SrcBlend = D3D12_BLEND_ONE,
-                        .DestBlend = D3D12_BLEND_ZERO,
-                        .BlendOp = D3D12_BLEND_OP_ADD,
-                        .SrcBlendAlpha = D3D12_BLEND_ONE,
-                        .DestBlendAlpha = D3D12_BLEND_ZERO,
-                        .BlendOpAlpha = D3D12_BLEND_OP_ADD,
-                        .LogicOp = D3D12_LOGIC_OP_NOOP,
-                        .RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL,
-                    }},
-                },
-            .SampleMask = UINT_MAX,
-            .RasterizerState =
-                {
-                    .FillMode = D3D12_FILL_MODE_SOLID,
-                    .CullMode = D3D12_CULL_MODE_BACK,
-                    .FrontCounterClockwise = FALSE,
-                    .DepthClipEnable = FALSE,
-                    .MultisampleEnable = FALSE,
-                    .ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF,
-                },
-            .DepthStencilState =
-                {
-                    .DepthEnable = TRUE,
-                    .DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL,
-                    .DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL,
-                    .StencilEnable = FALSE,
-                    .FrontFace =
-                        {
-                            .StencilFailOp = D3D12_STENCIL_OP_KEEP,
-                            .StencilDepthFailOp = D3D12_STENCIL_OP_KEEP,
-                            .StencilPassOp = D3D12_STENCIL_OP_KEEP,
-                            .StencilFunc = D3D12_COMPARISON_FUNC_ALWAYS,
-                        },
-                    .BackFace =
-                        {
-                            .StencilFailOp = D3D12_STENCIL_OP_KEEP,
-                            .StencilDepthFailOp = D3D12_STENCIL_OP_KEEP,
-                            .StencilPassOp = D3D12_STENCIL_OP_KEEP,
-                            .StencilFunc = D3D12_COMPARISON_FUNC_ALWAYS,
-                        },
-                },
-            .InputLayout =
-                {
-                    .NumElements = 0u,
-                },
-            // Specify partial primitive type, while IA determines if its a strip / list.
-            .PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
-            .NumRenderTargets = 1u,
-            .RTVFormats =
-                {
-                    DXGI_FORMAT_R8G8B8A8_UNORM,
-                },
-            .DSVFormat =
-                {
-                    DXGI_FORMAT_D32_FLOAT,
-                },
-            .SampleDesc = {1u, 0u},
-            .NodeMask = 0u,
+        // A simple lambda function that takes as input a combined vertex and pixel shader path, and create a graphics
+        // pipeline state object.
+
+        const auto create_graphics_pipeline = [&](const std::wstring_view shader_path) -> ComPtr<ID3D12PipelineState> {
+            // Compile shaders.
+            ComPtr<IDxcBlob> vertex_shader_blob =
+                nether::shader_compiler::compile_shader(shader_path.data(), L"vs_6_6", L"vs_main");
+            ComPtr<IDxcBlob> pixel_shader_blob =
+                nether::shader_compiler::compile_shader(shader_path.data(), L"ps_6_6", L"ps_main");
+
+            const D3D12_GRAPHICS_PIPELINE_STATE_DESC graphics_pipeline_state_desc = {
+                .pRootSignature = root_signature.Get(),
+                .VS =
+                    {
+                        .pShaderBytecode = vertex_shader_blob->GetBufferPointer(),
+                        .BytecodeLength = vertex_shader_blob->GetBufferSize(),
+                    },
+                .PS =
+                    {
+                        .pShaderBytecode = pixel_shader_blob->GetBufferPointer(),
+                        .BytecodeLength = pixel_shader_blob->GetBufferSize(),
+                    },
+                .BlendState =
+                    {
+                        .AlphaToCoverageEnable = false,
+                        .IndependentBlendEnable = false,
+                        .RenderTarget = {D3D12_RENDER_TARGET_BLEND_DESC{
+                            .BlendEnable = FALSE,
+                            .LogicOpEnable = FALSE,
+                            .SrcBlend = D3D12_BLEND_ONE,
+                            .DestBlend = D3D12_BLEND_ZERO,
+                            .BlendOp = D3D12_BLEND_OP_ADD,
+                            .SrcBlendAlpha = D3D12_BLEND_ONE,
+                            .DestBlendAlpha = D3D12_BLEND_ZERO,
+                            .BlendOpAlpha = D3D12_BLEND_OP_ADD,
+                            .LogicOp = D3D12_LOGIC_OP_NOOP,
+                            .RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL,
+                        }},
+                    },
+                .SampleMask = UINT_MAX,
+                .RasterizerState =
+                    {
+                        .FillMode = D3D12_FILL_MODE_SOLID,
+                        .CullMode = D3D12_CULL_MODE_BACK,
+                        .FrontCounterClockwise = FALSE,
+                        .DepthClipEnable = FALSE,
+                        .MultisampleEnable = FALSE,
+                        .ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF,
+                    },
+                .DepthStencilState =
+                    {
+                        .DepthEnable = TRUE,
+                        .DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL,
+                        .DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL,
+                        .StencilEnable = FALSE,
+                        .FrontFace =
+                            {
+                                .StencilFailOp = D3D12_STENCIL_OP_KEEP,
+                                .StencilDepthFailOp = D3D12_STENCIL_OP_KEEP,
+                                .StencilPassOp = D3D12_STENCIL_OP_KEEP,
+                                .StencilFunc = D3D12_COMPARISON_FUNC_ALWAYS,
+                            },
+                        .BackFace =
+                            {
+                                .StencilFailOp = D3D12_STENCIL_OP_KEEP,
+                                .StencilDepthFailOp = D3D12_STENCIL_OP_KEEP,
+                                .StencilPassOp = D3D12_STENCIL_OP_KEEP,
+                                .StencilFunc = D3D12_COMPARISON_FUNC_ALWAYS,
+                            },
+                    },
+                .InputLayout =
+                    {
+                        .NumElements = 0u,
+                    },
+                // Specify partial primitive type, while IA determines if its a strip / list.
+                .PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
+                .NumRenderTargets = 1u,
+                .RTVFormats =
+                    {
+                        DXGI_FORMAT_R8G8B8A8_UNORM,
+                    },
+                .DSVFormat =
+                    {
+                        DXGI_FORMAT_D32_FLOAT,
+                    },
+                .SampleDesc = {1u, 0u},
+                .NodeMask = 0u,
+            };
+
+            ComPtr<ID3D12PipelineState> pso = {};
+            throw_if_failed(device->CreateGraphicsPipelineState(&graphics_pipeline_state_desc, IID_PPV_ARGS(&pso)));
+
+            return pso;
         };
 
-        ComPtr<ID3D12PipelineState> pso = {};
-        throw_if_failed(device->CreateGraphicsPipelineState(&graphics_pipeline_state_desc, IID_PPV_ARGS(&pso)));
+        ComPtr<ID3D12PipelineState> test_graphics_pipeline = create_graphics_pipeline(L"shaders/test_shader.hlsl");
+        ComPtr<ID3D12PipelineState> light_graphics_pipeline = create_graphics_pipeline(L"shaders/light_shader.hlsl");
 
         ShowWindow(window_handle, SW_SHOW);
 
@@ -659,10 +730,14 @@ int main()
                 DirectX::XMVector3Normalize(DirectX::XMVector3Cross(camera_front, camera_right));
 
             // Update constant buffer's and other scene parameter.
-            transform_buffer_t transform_buffer = {};
-            transform_buffer.model_matrix = DirectX::XMMatrixRotationX(frame_index / 120.0f) *
-                                            DirectX::XMMatrixRotationY(frame_index / 70.0f) *
-                                            DirectX::XMMatrixTranslation(0.0f, 0.0f, 5.0f);
+            transform_constant_buffer_creation_result.data.model_matrix =
+                DirectX::XMMatrixRotationX(frame_index / 120.0f) * DirectX::XMMatrixRotationY(frame_index / 70.0f) *
+                DirectX::XMMatrixTranslation(0.0f, 0.0f, 5.0f);
+
+            const auto light_translation = scene_constant_buffer_creation_result.data.light_position;
+
+            light_transform_constant_buffer_creation_result.data.model_matrix =
+                DirectX::XMMatrixTranslation(light_translation.x, light_translation.y, light_translation.z);
 
             const DirectX::XMVECTOR target_vector = camera_position + camera_front;
 
@@ -678,7 +753,6 @@ int main()
             f32 sin_fov{};
             f32 cos_fov{};
             DirectX::XMScalarSinCos(&sin_fov, &cos_fov, 0.5f * DirectX::XMConvertToRadians(45.0f));
-
             const f32 height = cos_fov / sin_fov;
             const f32 width = height / window_aspect_ratio;
 
@@ -687,10 +761,20 @@ int main()
                 DirectX::XMMatrixSet(width, 0.0f, 0.0f, 0.0f, 0.0f, height, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f,
                                      0.0f, near_plane, 0.0f);
 
-            transform_buffer.view_projection_matrix =
+            transform_constant_buffer_creation_result.data.view_projection_matrix =
                 DirectX::XMMatrixLookAtLH(camera_position, target_vector, camera_up) * projection_matrix;
 
-            memcpy(transform_constant_buffer_creation_result.ptr, &transform_buffer, sizeof(transform_buffer_t));
+            light_transform_constant_buffer_creation_result.data.view_projection_matrix =
+                DirectX::XMMatrixLookAtLH(camera_position, target_vector, camera_up) * projection_matrix;
+
+            memcpy(transform_constant_buffer_creation_result.ptr, &transform_constant_buffer_creation_result.data,
+                   sizeof(transform_buffer_t));
+
+            memcpy(light_transform_constant_buffer_creation_result.ptr,
+                   &light_transform_constant_buffer_creation_result.data, sizeof(transform_buffer_t));
+
+            memcpy(scene_constant_buffer_creation_result.ptr, &scene_constant_buffer_creation_result.data,
+                   sizeof(scene_buffer_t));
 
             // Reset command allocator and list for current frame.
             throw_if_failed(direct_command_allocators[current_swapchain_backbuffer_index]->Reset());
@@ -729,28 +813,58 @@ int main()
             graphics_command_list->SetDescriptorHeaps(1u, &shader_visible_descriptor_heaps);
 
             // Set pipeline state.
-            graphics_command_list->SetPipelineState(pso.Get());
             graphics_command_list->SetGraphicsRootSignature(root_signature.Get());
             graphics_command_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             graphics_command_list->IASetIndexBuffer(&index_buffer_view);
 
-            struct render_resources_t
-            {
-                u32 position_buffer_index{};
-                u32 color_buffer_index{};
-                u32 transform_constant_buffer_index{};
-            };
-            render_resources_t render_resources = {
-                .position_buffer_index = vertex_position_buffer_creation_result.srv_index,
-                .color_buffer_index = vertex_color_buffer_creation_result.srv_index,
-                .transform_constant_buffer_index = transform_constant_buffer_creation_result.cbv_index,
-            };
-            graphics_command_list->SetGraphicsRoot32BitConstants(0u, 64u, &render_resources, 0u);
-
             graphics_command_list->RSSetViewports(1u, &viewport);
             graphics_command_list->RSSetScissorRects(1u, &scissor_rect);
 
-            graphics_command_list->DrawIndexedInstanced(36u, 1u, 0u, 0u, 0u);
+            // Render the game object (cube)
+            if (0)
+            {
+                graphics_command_list->SetPipelineState(test_graphics_pipeline.Get());
+
+                struct render_resources_t
+                {
+                    u32 position_buffer_index{};
+                    u32 color_buffer_index{};
+                    u32 transform_constant_buffer_index{};
+                    u32 scene_constant_buffer_index{};
+                };
+
+                render_resources_t render_resources = {
+                    .position_buffer_index = vertex_position_buffer_creation_result.srv_index,
+                    .color_buffer_index = vertex_color_buffer_creation_result.srv_index,
+                    .transform_constant_buffer_index = transform_constant_buffer_creation_result.cbv_index,
+                    .scene_constant_buffer_index = scene_constant_buffer_creation_result.cbv_index,
+                };
+                graphics_command_list->SetGraphicsRoot32BitConstants(0u, 64u, &render_resources, 0u);
+
+                graphics_command_list->DrawIndexedInstanced(36u, 1u, 0u, 0u, 0u);
+            }
+
+            // Render the light object (cube)
+            {
+                graphics_command_list->SetGraphicsRootSignature(root_signature.Get());
+                graphics_command_list->SetPipelineState(light_graphics_pipeline.Get());
+
+                struct render_resources_t
+                {
+                    u32 position_buffer_index;
+                    u32 transform_buffer_index;
+                    u32 scene_buffer_index;
+                };
+
+                render_resources_t render_resources = {
+                    .position_buffer_index = vertex_position_buffer_creation_result.srv_index,
+                    .transform_buffer_index = light_transform_constant_buffer_creation_result.cbv_index,
+                    .scene_buffer_index = scene_constant_buffer_creation_result.cbv_index,
+                };
+
+                graphics_command_list->SetGraphicsRoot32BitConstants(0u, 64u, &render_resources, 0u);
+                graphics_command_list->DrawIndexedInstanced(36u, 1u, 0u, 0u, 0u);
+            }
 
             // Transition swapchain back to presentable format.
             const D3D12_RESOURCE_BARRIER backbuffer_render_target_to_present = {
