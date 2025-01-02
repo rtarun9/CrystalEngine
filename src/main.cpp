@@ -3,6 +3,11 @@
 #include "descriptor_heap.hpp"
 #include "shader_compiler.hpp"
 
+#include "imgui.h"
+
+#include "backends/imgui_impl_dx12.h"
+#include "backends/imgui_impl_win32.h"
+
 // Parameter setup for directx agility SDK.
 extern "C"
 {
@@ -453,6 +458,22 @@ int main()
                                                     root_signature_blob->GetBufferSize(),
                                                     IID_PPV_ARGS(&root_signature)));
 
+        const auto allocate_descriptor_handle_imgui = [&]() {
+            return cbv_srv_uav_descriptor_heap.get_then_offset_current_descriptor_handle();
+        };
+
+        // ImGui setup.
+        nether::descriptor_handle_t imgui_descriptor_handle =
+            cbv_srv_uav_descriptor_heap.get_then_offset_current_descriptor_handle();
+
+        IMGUI_CHECKVERSION();
+        ImGui::CreateContext();
+        ImGui::StyleColorsDark();
+        ImGui_ImplWin32_Init(window_handle);
+        ImGui_ImplDX12_Init(device.Get(), NUM_BACK_BUFFERS, DXGI_FORMAT_R8G8B8A8_UNORM,
+                            cbv_srv_uav_descriptor_heap.descriptor_heap.Get(), imgui_descriptor_handle.cpu_handle,
+                            imgui_descriptor_handle.gpu_handle);
+
         // Create upload heaps for vertex data (position / color), index buffer and the constant buffer.
 
         static constexpr std::array<DirectX::XMFLOAT3, 8> position_data = {
@@ -494,13 +515,13 @@ int main()
         struct alignas(256) transform_buffer_t
         {
             DirectX::XMMATRIX model_matrix{};
-            DirectX::XMMATRIX view_projection_matrix{};
         };
 
         struct alignas(256) scene_buffer_t
         {
             DirectX::XMFLOAT4 light_position{};
             DirectX::XMFLOAT4 light_color{};
+            DirectX::XMMATRIX view_projection_matrix{};
         };
 
         constant_buffer_creation_result_t<transform_buffer_t> transform_constant_buffer_creation_result =
@@ -512,7 +533,7 @@ int main()
         constant_buffer_creation_result_t<scene_buffer_t> scene_constant_buffer_creation_result =
             create_constant_buffer<scene_buffer_t>(device.Get(), &cbv_srv_uav_descriptor_heap);
 
-        scene_constant_buffer_creation_result.data.light_position = {0.0f, 1.0f, 5.0f, 1.0f};
+        scene_constant_buffer_creation_result.data.light_position = {0.0f, 7.0f, 10.0f, 1.0f};
         scene_constant_buffer_creation_result.data.light_color = {1.0f, 1.0f, 1.0f, 1.0f};
 
         // A simple lambda function that takes as input a combined vertex and pixel shader path, and create a graphics
@@ -641,6 +662,13 @@ int main()
         bool quit = false;
         while (!quit)
         {
+            // Start the Dear ImGui frame
+            ImGui_ImplDX12_NewFrame();
+            ImGui_ImplWin32_NewFrame();
+            ImGui::NewFrame();
+
+            ImGui::ShowDemoWindow();
+
             using namespace DirectX;
 
             const f32 camera_movement_speed = 20.0f * delta_time;
@@ -737,6 +765,7 @@ int main()
             const auto light_translation = scene_constant_buffer_creation_result.data.light_position;
 
             light_transform_constant_buffer_creation_result.data.model_matrix =
+                DirectX::XMMatrixScaling(0.1f, 0.1f, 0.1f) *
                 DirectX::XMMatrixTranslation(light_translation.x, light_translation.y, light_translation.z);
 
             const DirectX::XMVECTOR target_vector = camera_position + camera_front;
@@ -761,10 +790,7 @@ int main()
                 DirectX::XMMatrixSet(width, 0.0f, 0.0f, 0.0f, 0.0f, height, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f,
                                      0.0f, near_plane, 0.0f);
 
-            transform_constant_buffer_creation_result.data.view_projection_matrix =
-                DirectX::XMMatrixLookAtLH(camera_position, target_vector, camera_up) * projection_matrix;
-
-            light_transform_constant_buffer_creation_result.data.view_projection_matrix =
+            scene_constant_buffer_creation_result.data.view_projection_matrix =
                 DirectX::XMMatrixLookAtLH(camera_position, target_vector, camera_up) * projection_matrix;
 
             memcpy(transform_constant_buffer_creation_result.ptr, &transform_constant_buffer_creation_result.data,
@@ -821,7 +847,6 @@ int main()
             graphics_command_list->RSSetScissorRects(1u, &scissor_rect);
 
             // Render the game object (cube)
-            if (0)
             {
                 graphics_command_list->SetPipelineState(test_graphics_pipeline.Get());
 
@@ -865,6 +890,9 @@ int main()
                 graphics_command_list->SetGraphicsRoot32BitConstants(0u, 64u, &render_resources, 0u);
                 graphics_command_list->DrawIndexedInstanced(36u, 1u, 0u, 0u, 0u);
             }
+
+            ImGui::Render();
+            ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), graphics_command_list.Get());
 
             // Transition swapchain back to presentable format.
             const D3D12_RESOURCE_BARRIER backbuffer_render_target_to_present = {
@@ -933,8 +961,15 @@ int main()
     return 0;
 }
 
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+
 LRESULT CALLBACK win32_window_proc(HWND window_handle, UINT message, WPARAM w_param, LPARAM l_param)
 {
+    if (ImGui_ImplWin32_WndProcHandler(window_handle, message, w_param, l_param))
+    {
+        return true;
+    }
+
     switch (message)
     {
     case WM_DESTROY: {
